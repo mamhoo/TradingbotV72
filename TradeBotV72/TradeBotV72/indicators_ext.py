@@ -228,13 +228,9 @@ def bb_squeeze(df: pd.DataFrame, bb_period: int = 20, bb_std: float = 2.0,
 
 def bb_squeeze_momentum(df: pd.DataFrame, period: int = 20) -> pd.Series:
     """
-    Squeeze Momentum Oscillator (simplified Lazybear-style).
-    Measures momentum as delta of price from the midpoint of the highest high/lowest low
-    and the SMA of that midpoint.
-
-    Returns
-    -------
-    pd.Series of momentum values (positive = bullish, negative = bearish)
+    Squeeze Momentum Oscillator (Lazybear-style).
+    Measures momentum as the linear regression of price from the average of 
+    (Highest High + Lowest Low)/2 and SMA.
     """
     close = df["close"]
     high  = df["high"]
@@ -244,15 +240,19 @@ def bb_squeeze_momentum(df: pd.DataFrame, period: int = 20) -> pd.Series:
     highest_high = high.rolling(period).max()
     lowest_low   = low.rolling(period).min()
     mid_hl = (highest_high + lowest_low) / 2
-
-    # SMA of close
     sma_close = close.rolling(period).mean()
+    
+    val = close - (mid_hl + sma_close) / 2
+    
+    # Linear regression to smooth and find the trend of the momentum
+    def linreg(x):
+        if len(x) < period: return 0
+        y = np.array(x)
+        x_axis = np.arange(len(y))
+        slope, intercept = np.polyfit(x_axis, y, 1)
+        return slope * (len(y) - 1) + intercept
 
-    # Delta from midpoint
-    delta = close - (mid_hl + sma_close) / 2
-
-    # Smooth the delta
-    momentum = delta.rolling(period).mean()
+    momentum = val.rolling(window=period).apply(linreg, raw=False)
     return momentum
 
 
