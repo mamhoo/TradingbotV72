@@ -124,7 +124,7 @@ def register_sl_hit(symbol: str):
 
 # ── Daily trend gate (D1) ─────────────────────────────────────────────────────
 
-def check_daily_trend(symbol: str, action: str, fast: int = 21, slow: int = 55) -> Tuple[bool, str, int]:
+def check_daily_trend(symbol: str, action: str, fast: int = 21, slow: int = 55, df_d1_override: Optional[pd.DataFrame] = None) -> Tuple[bool, str, int]:
     """
     FIX v6.1: Soft gate instead of hard block.
     Returns (allowed, d1_trend, score_adjustment).
@@ -133,7 +133,7 @@ def check_daily_trend(symbol: str, action: str, fast: int = 21, slow: int = 55) 
     - Against D1 → -15 penalty, but still allow if H1+H4 strongly aligned
     Hard block ONLY when D1 is strongly against AND trend is weak on lower TFs.
     """
-    df_d1 = get_mt5_ohlcv(symbol, "D1", bars=100)
+    df_d1 = df_d1_override if df_d1_override is not None else get_mt5_ohlcv(symbol, "D1", bars=100)
     if df_d1 is None or len(df_d1) < slow + 5:
         log.warning("[GOLD] D1 data missing — allowing with neutral score")
         return True, "UNKNOWN", 0
@@ -382,6 +382,7 @@ def check_gold_signal(
         symbol, action,
         config.get("gold_ema_fast", 21),
         config.get("gold_ema_slow", 55),
+        df_d1_override=df_d1,
     )
     # d1_ok is always True now; d1_score_adj adjusts the final score
 

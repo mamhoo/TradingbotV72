@@ -22,23 +22,32 @@ from gold_strategy import check_gold_signal
 from bb_squeeze_strategy import check_squeeze_signal
 
 def download_gold_data(period="1y", interval="1h"):
-    log.info(f"Downloading Gold data: period={period}, interval={interval}")
+    log.info(f"Downloading Gold H1 data: period={period}, interval={interval}")
     # GC=F is Gold Futures on Yahoo Finance
-    df = yf.download("GC=F", period=period, interval=interval, progress=False)
-    if df.empty:
-        # Fallback to GLD if GC=F fails
-        df = yf.download("GLD", period=period, interval=interval, progress=False)
+    df_h1 = yf.download("GC=F", period=period, interval=interval, progress=False)
+    if df_h1.empty:
+        df_h1 = yf.download("GLD", period=period, interval=interval, progress=False)
     
+    log.info(f"Downloading Gold D1 data for trend filtering...")
+    df_d1 = yf.download("GC=F", period="2y", interval="1d", progress=False)
+    if df_d1.empty:
+        df_d1 = yf.download("GLD", period="2y", interval="1d", progress=False)
+
     # Flatten columns if multi-index
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    for df in [df_h1, df_d1]:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [c.lower() for c in df.columns]
+        # Ensure timezone-naive for comparison
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
     
-    df.columns = [c.lower() for c in df.columns]
-    return df
+    return df_h1, df_d1
 
 class FastBacktester:
-    def __init__(self, df, initial_balance=10000):
-        self.df = df
+    def __init__(self, df_h1, df_d1, initial_balance=10000):
+        self.df_h1 = df_h1
+        self.df_d1 = df_d1
         self.initial_balance = initial_balance
         self.config = {
             "mt5_symbol": "XAUUSD",
@@ -58,9 +67,9 @@ class FastBacktester:
         # Warmup period
         warmup = 100
         
-        for i in range(warmup, len(self.df)):
-            current_row = self.df.iloc[i]
-            current_time = self.df.index[i]
+        for i in range(warmup, len(self.df_h1)):
+            current_row = self.df_h1.iloc[i]
+            current_time = self.df_h1.index[i]
             
             # Check active trade
             if active_trade:
@@ -96,17 +105,28 @@ class FastBacktester:
             
             # Look for new signal if no active trade
             if not active_trade:
-                # Prepare data slice for strategy
-                df_slice = self.df.iloc[max(0, i-200):i+1].copy()
+                # Prepare data slices
+                h1_slice = self.df_h1.iloc[max(0, i-200):i+1].copy()
+                m15_slice = h1_slice # Simplified
+                h4_slice = h1_slice  # Simplified
+                
+                # Get D1 data up to current time
+                d1_slice = self.df_d1[self.df_d1.index < current_time].tail(200).copy()
                 
                 # Update balance in config
                 self.config["gold_account_balance"] = balance
                 
                 # Call strategy
-                signal = strategy_func(self.config, df_m5_override=df_slice, df_m15_override=df_slice, df_h1_override=df_slice, df_h4_override=df_slice, df_d1_override=df_slice)
+                signal = strategy_func(
+                    self.config, 
+                    df_m5_override=h1_slice, 
+                    df_m15_override=m15_slice, 
+                    df_h1_override=h1_slice, 
+                    df_h4_override=h4_slice, 
+                    df_d1_override=d1_slice
+                )
                 
                 if signal:
-                    # Handle both 'lot' and 'lot_or_qty' for compatibility
                     lot = getattr(signal, 'lot', getattr(signal, 'lot_or_qty', 0.01))
                     active_trade = {
                         'action': signal.action,
@@ -155,12 +175,12 @@ class FastBacktester:
         }
 
 if __name__ == "__main__":
-    df = download_gold_data(period="1y", interval="1h")
-    if df.empty:
+    df_h1, df_d1 = download_gold_data(period="1y", interval="1h")
+    if df_h1.empty or df_d1.empty:
         log.error("Failed to download data")
         sys.exit(1)
         
-    backtester = FastBacktester(df)
+    backtester = FastBacktester(df_h1, df_d1)
     
     log.info("\nRunning Backtest for Original Strategy...")
     original_results = backtester.run(check_gold_signal, "Original")
