@@ -1,11 +1,12 @@
 """
-bb_squeeze_strategy.py — Optimized Bollinger Band Squeeze with VWAP & Volume Profile
+bb_squeeze_strategy.py — High-Profit Bollinger Band Squeeze with VWAP & Volume Profile
 TradingbotV72 Strategy Module
 
-OPTIMIZATIONS:
-  - Higher Frequency: Reduced minimum squeeze duration to 1 bar.
-  - Higher Win Rate: Added multi-timeframe trend alignment (H1/H4) and more sensitive momentum.
-  - Better Entries: Uses Squeeze Momentum Oscillator (Lazybear-style) for early breakout detection.
+OPTIMIZATIONS FOR MAXIMUM P&L:
+  - High Reward Target: 2.0:1 RR to capture explosive moves.
+  - Balanced Stops: 1.5x ATR to avoid noise while maintaining high R:R.
+  - Squeeze Quality: Require 1 bar of squeeze for rapid response.
+  - Momentum Focus: Prioritizes squeeze duration and momentum slope.
 """
 
 import logging
@@ -49,13 +50,13 @@ SQ_PARAMS = {
     "momentum_period":     20,
     "vwap_period":         50,
     "vp_bins":             40,
-    "min_squeeze_bars":    1,     # Increased frequency: only 1 bar of squeeze needed
+    "min_squeeze_bars":    1,      # Rapid response
     "max_squeeze_bars":    50,    
-    "hvn_clear_path_pct":  0.002, # Less restrictive HVN check
-    "min_score":           40,    # Lower score threshold for more signals
-    "min_rr":              1.2,    # Realistic RR for higher win rate
-    "atr_sl_mult":         1.5,    # Wider stop for higher win rate (avoid noise)
-    "vol_ratio_threshold": 1.0,    # Neutral volume requirement
+    "hvn_clear_path_pct":  0.002, 
+    "min_score":           40,     
+    "min_rr":              1.5,    
+    "atr_sl_mult":         1.5,    
+    "vol_ratio_threshold": 1.0,    
 }
 
 
@@ -110,7 +111,6 @@ def _score_squeeze_signal(
     clear_path: bool,
     vol_ratio: float,
     h1_trend: str,
-    h4_trend: str,
     session: str,
 ) -> Tuple[int, List[str]]:
     score = 0
@@ -142,18 +142,10 @@ def _score_squeeze_signal(
         score += 10
         reasons.append("VOL_BOOST(+10)")
 
-    # Trend Alignment (CRITICAL for Win Rate)
-    if action == "BUY":
-        if h1_trend == "UP": score += 15; reasons.append("H1_UP(+15)")
-        if h4_trend == "UP": score += 15; reasons.append("H4_UP(+15)")
-    else:
-        if h1_trend == "DOWN": score += 15; reasons.append("H1_DOWN(+15)")
-        if h4_trend == "DOWN": score += 15; reasons.append("H4_DOWN(+15)")
-
-    # Session bonus
-    if session in ("LONDON", "NEW_YORK", "LONDON_NY_OVERLAP"):
-        score += 5
-        reasons.append(f"{session}(+5)")
+    # Trend
+    if (action == "BUY" and h1_trend == "UP") or (action == "SELL" and h1_trend == "DOWN"):
+        score += 15
+        reasons.append("TREND_ALIGNED(+15)")
 
     return score, reasons
 
@@ -184,9 +176,8 @@ def check_squeeze_signal(
     # 3. Load data
     df_m15 = _get_ohlcv(symbol, "M15", 300, df_m15_override)
     df_h1  = _get_ohlcv(symbol, "H1",  300, df_h1_override)
-    df_h4  = _get_ohlcv(symbol, "H4",  200, df_h4_override)
 
-    if any(d is None or len(d) < 50 for d in [df_m15, df_h1, df_h4]):
+    if any(d is None or len(d) < 50 for d in [df_m15, df_h1]):
         return None
 
     current_price = df_m15["close"].iloc[-1]
@@ -195,7 +186,7 @@ def check_squeeze_signal(
     # 4. Squeeze analysis
     is_squeezed, just_released, squeeze_duration = analyze_squeeze(df_m15)
     
-    # We allow entry if just released OR if currently squeezed but breaking out
+    # Check for breakout
     bb_upper_s, _, bb_lower_s = bollinger_bands(df_m15["close"], SQ_PARAMS["bb_period"], SQ_PARAMS["bb_std"])
     bb_upper_val = bb_upper_s.iloc[-1]
     bb_lower_val = bb_lower_s.iloc[-1]
@@ -209,7 +200,7 @@ def check_squeeze_signal(
     if squeeze_duration < SQ_PARAMS["min_squeeze_bars"]:
         return None
 
-    # 5. Momentum & Direction
+    # 5. Momentum
     momentum = bb_squeeze_momentum(df_m15, SQ_PARAMS["momentum_period"])
     mom_val = momentum.iloc[-1]
     if pd.isna(mom_val): return None
@@ -233,41 +224,36 @@ def check_squeeze_signal(
         if hvn_below and (current_price - max(hvn_below)) / current_price < SQ_PARAMS["hvn_clear_path_pct"]:
             clear_path = False
 
-    # 7. Multi-timeframe Trend
     h1_trend = get_trend(df_h1, 21, 55)
-    h4_trend = get_trend(df_h4, 21, 55)
 
-    # 8. Scoring
+    # 7. Scoring
     score, reasons = _score_squeeze_signal(
-        action, squeeze_duration, mom_val, above_vwap, clear_path, vol_ratio, h1_trend, h4_trend, session
+        action, squeeze_duration, mom_val, above_vwap, clear_path, vol_ratio, h1_trend, session
     )
 
     if score < SQ_PARAMS["min_score"]:
         return None
 
-    # 9. SL/TP
-    _, kc_mid_s, _ = keltner_channels(df_m15, SQ_PARAMS["kc_period"], SQ_PARAMS["kc_atr_period"], SQ_PARAMS["kc_mult"])
-    kc_mid_val = kc_mid_s.iloc[-1]
-
+    # 8. SL/TP
     if action == "BUY":
-        sl = min(kc_mid_val, current_price - current_atr * SQ_PARAMS["atr_sl_mult"])
-        tp = current_price + (current_price - sl) * 1.5
+        sl = current_price - current_atr * SQ_PARAMS["atr_sl_mult"]
+        tp = current_price + (current_price - sl) * 2.0
     else:
-        sl = max(kc_mid_val, current_price + current_atr * SQ_PARAMS["atr_sl_mult"])
-        tp = current_price - (sl - current_price) * 1.5
+        sl = current_price + current_atr * SQ_PARAMS["atr_sl_mult"]
+        tp = current_price - (sl - current_price) * 2.0
 
     risk_pts = abs(current_price - sl)
     rr_ratio = abs(tp - current_price) / risk_pts if risk_pts > 0 else 0
     if rr_ratio < SQ_PARAMS["min_rr"]: return None
 
-    # 10. Position sizing
-    risk_pct = config.get("gold_risk_pct", 0.5)
+    # 9. Position sizing
+    risk_pct = config.get("gold_risk_pct", 0.75)
     lot = calculate_lot_size(config.get("gold_account_balance", 1000), risk_pct, current_price, sl, current_atr)
     
     return Signal(
         market="GOLD", symbol=symbol, action=action, entry=current_price,
         sl=round(sl, 2), tp=round(tp, 2), lot_or_qty=lot, score=score,
-        reason=f"BBSqueeze_Opt | Score:{score} | {' | '.join(reasons)}",
+        reason=f"BBSqueeze_Profit | Score:{score} | {' | '.join(reasons)}",
         sr_level=current_price, sr_type="NONE", zone_strength=0,
         trend_1h=h1_trend, rsi=0.0, risk_usdt=risk_pct * config.get("gold_account_balance", 1000) / 100,
         partial_tps=calculate_partial_tp(current_price, action, sl, rr_ratio),
