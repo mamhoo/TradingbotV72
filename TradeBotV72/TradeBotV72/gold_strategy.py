@@ -16,7 +16,13 @@ FIXES from v6.0:
 
 import logging
 import pandas as pd
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    mt5 = None
+    MT5_AVAILABLE = False
+
 import time
 from typing import Optional, Tuple, List
 from datetime import datetime, time as dt_time
@@ -27,15 +33,18 @@ from session_config import is_tradeable, thai_time_str
 
 log = logging.getLogger(__name__)
 
-TF_MAP = {
-    "M1":  mt5.TIMEFRAME_M1,
-    "M5":  mt5.TIMEFRAME_M5,
-    "M15": mt5.TIMEFRAME_M15,
-    "M30": mt5.TIMEFRAME_M30,
-    "H1":  mt5.TIMEFRAME_H1,
-    "H4":  mt5.TIMEFRAME_H4,
-    "D1":  mt5.TIMEFRAME_D1,
-}
+if MT5_AVAILABLE:
+    TF_MAP = {
+        "M1":  mt5.TIMEFRAME_M1,
+        "M5":  mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "M30": mt5.TIMEFRAME_M30,
+        "H1":  mt5.TIMEFRAME_H1,
+        "H4":  mt5.TIMEFRAME_H4,
+        "D1":  mt5.TIMEFRAME_D1,
+    }
+else:
+    TF_MAP = {}
 
 _last_sl_time: dict = {}
 COOLDOWN_BARS    = 3
@@ -309,35 +318,40 @@ def calculate_lot_size(
 
 # ── Main signal function ──────────────────────────────────────────────────────
 
-def check_gold_signal(config: dict) -> Optional[Signal]:
+def check_gold_signal(
+    config: dict,
+    df_m5_override:  Optional[pd.DataFrame] = None,
+    df_m15_override: Optional[pd.DataFrame] = None,
+    df_h1_override:  Optional[pd.DataFrame] = None,
+    df_h4_override:  Optional[pd.DataFrame] = None,
+    df_d1_override:  Optional[pd.DataFrame] = None,
+) -> Optional[Signal]:
     symbol = config.get("mt5_symbol", "XAUUSD")
 
     # ── 1. Session gate ──────────────────────────────────────────────────────
     can_trade, session, session_params = is_tradeable()
     if not can_trade:
-        log.info("[GOLD] Session inactive — skip")
         return None
-
-    log.info("[GOLD] %s | Session: %s", thai_time_str(), session)
 
     # ── 2. Spread check ──────────────────────────────────────────────────────
-    spread_ok, spread_pips = check_spread(symbol, config.get("gold_max_spread_pips", 80))
-    if not spread_ok:
-        log.info("[GOLD] Spread %.1f pips too high — skip", spread_pips)
-        return None
+    if MT5_AVAILABLE and df_m15_override is None:
+        spread_ok, spread_pips = check_spread(symbol, config.get("gold_max_spread_pips", 80))
+        if not spread_ok:
+            return None
 
     # ── 3. Cooldown check ────────────────────────────────────────────────────
-    if is_in_cooldown(symbol):
-        return None
+    if MT5_AVAILABLE and df_m15_override is None:
+        if is_in_cooldown(symbol):
+            return None
 
     # ── 4. Load data ─────────────────────────────────────────────────────────
-    df_m5  = get_mt5_ohlcv(symbol, "M5",  200)
-    df_m15 = get_mt5_ohlcv(symbol, "M15", 200)
-    df_h1  = get_mt5_ohlcv(symbol, "H1",  300)
-    df_h4  = get_mt5_ohlcv(symbol, "H4",  200)
+    df_m5  = df_m5_override  if df_m5_override  is not None else get_mt5_ohlcv(symbol, "M5",  200)
+    df_m15 = df_m15_override if df_m15_override is not None else get_mt5_ohlcv(symbol, "M15", 200)
+    df_h1  = df_h1_override  if df_h1_override  is not None else get_mt5_ohlcv(symbol, "H1",  300)
+    df_h4  = df_h4_override  if df_h4_override  is not None else get_mt5_ohlcv(symbol, "H4",  200)
+    df_d1  = df_d1_override  if df_d1_override  is not None else get_mt5_ohlcv(symbol, "D1",  100)
 
     if any(d is None for d in [df_m5, df_m15, df_h1, df_h4]):
-        log.warning("[GOLD] Missing OHLCV data — skip")
         return None
 
     current_price = df_m5["close"].iloc[-1]
@@ -503,10 +517,13 @@ def check_gold_signal(config: dict) -> Optional[Signal]:
     )
 
     # ── 15. SL/TP calculation ────────────────────────────────────────────────
-    sym_info  = mt5.symbol_info(symbol)
-    min_stop  = (sym_info.trade_stops_level * sym_info.point) if sym_info else 0
-    tick      = mt5.symbol_info_tick(symbol)
-    spread_buf = (tick.ask - tick.bid) * 2 if tick else 0
+    min_stop = 0
+    spread_buf = 0
+    if MT5_AVAILABLE:
+        sym_info  = mt5.symbol_info(symbol)
+        min_stop  = (sym_info.trade_stops_level * sym_info.point) if sym_info else 0
+        tick      = mt5.symbol_info_tick(symbol)
+        spread_buf = (tick.ask - tick.bid) * 2 if tick else 0
 
     h1_atr = atr(df_h1, 14).iloc[-1]
 

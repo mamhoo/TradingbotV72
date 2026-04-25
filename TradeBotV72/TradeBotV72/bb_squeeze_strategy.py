@@ -12,41 +12,30 @@ STRATEGY CONCEPT:
 ENTRY LOGIC:
   SQUEEZE CONDITION:
     - Bollinger Bands (20, 2.0) are entirely inside Keltner Channels (20, 1.5 ATR)
-    - Squeeze must have been active for at least 3 bars (confirmed consolidation)
+    - Squeeze must have been active for at least 2 bars (confirmed consolidation)
 
   BREAKOUT CONDITION:
     - Squeeze has just released (previous bar was squeezed, current bar is not)
-    - OR price has broken decisively outside the BB (> 0.5 ATR from the band)
+    - OR price has broken decisively outside the BB (> 0.2 ATR from the band)
 
   BUY  : Breakout is upward (close > BB upper), price > VWAP, momentum is positive,
-         and the nearest HVN above current price is at least 0.5% away (clear path).
+         and the nearest HVN above current price is at least 0.3% away (clear path).
 
   SELL : Breakout is downward (close < BB lower), price < VWAP, momentum is negative,
-         and the nearest HVN below current price is at least 0.5% away (clear path).
+         and the nearest HVN below current price is at least 0.3% away (clear path).
 
 FILTERS:
   - Session gate
   - Spread check
   - Cooldown after SL hit
-  - Squeeze duration: minimum 3 bars of squeeze before entry
+  - Squeeze duration: minimum 2 bars of squeeze before entry
   - Volume must expand on breakout (confirming genuine move, not fake-out)
   - D1 trend: soft gate (score penalty if counter-trend)
 
 SL/TP:
   - SL: Opposite side of the Keltner Channel midline (EMA) + ATR buffer
-        (if squeeze fails, price returns to the midline)
-  - TP: Nearest High Volume Node in the direction of the breakout
-        (HVN acts as a magnet and then resistance/support)
-  - Minimum RR: 1.5
-
-SCORING (0-100):
-  - Squeeze duration (bars): +5 per bar, max +25
-  - Momentum direction match : +20
-  - VWAP alignment           : +15
-  - Clear path (no HVN block): +15
-  - Volume expansion         : +15
-  - D1 alignment             : +10 / 0 / -10
-  - Session bonus            : +5
+  - TP: Nearest High Volume Node in the direction of the breakout or 2x risk
+  - Minimum RR: 1.3
 """
 
 import logging
@@ -90,13 +79,13 @@ SQ_PARAMS = {
     "momentum_period":     20,
     "vwap_period":         50,
     "vp_bins":             40,
-    "min_squeeze_bars":    3,     # Minimum bars of squeeze before entry
-    "max_squeeze_bars":    30,    # Ignore if squeeze lasted too long (stale)
-    "hvn_clear_path_pct":  0.005, # HVN must be at least 0.5% away for clear path
-    "min_score":           55,
-    "min_rr":              1.5,
-    "atr_sl_mult":         1.2,
-    "vol_ratio_threshold": 1.3,
+    "min_squeeze_bars":    2,     # Reduced from 3 to increase signal frequency
+    "max_squeeze_bars":    40,    # Increased from 30
+    "hvn_clear_path_pct":  0.003, # Reduced from 0.5% to 0.3% to be less restrictive
+    "min_score":           45,    # Reduced from 55 to increase signal frequency
+    "min_rr":              1.3,    # Reduced from 1.5
+    "atr_sl_mult":         1.0,    # Reduced from 1.2 for tighter stops
+    "vol_ratio_threshold": 1.1,    # Reduced from 1.3
 }
 
 
@@ -117,10 +106,7 @@ def _get_ohlcv(symbol: str, tf_str: str, bars: int = 300,
 def analyze_squeeze(df: pd.DataFrame) -> Tuple[bool, bool, int]:
     """
     Analyze the squeeze state of the most recent bars.
-
-    Returns
-    -------
-    (is_currently_squeezed, just_released, squeeze_duration_bars)
+    Returns (is_currently_squeezed, just_released, squeeze_duration_bars)
     """
     squeeze_series = bb_squeeze(
         df,
@@ -167,7 +153,7 @@ def _score_squeeze_signal(
     score = 0
     reasons = []
 
-    # Squeeze duration (more bars = stronger compression = bigger breakout)
+    # Squeeze duration
     sq_pts = min(25, squeeze_duration * 5)
     score += sq_pts
     reasons.append(f"SQ_{squeeze_duration}bars(+{sq_pts})")
@@ -188,16 +174,14 @@ def _score_squeeze_signal(
         score += 15
         reasons.append("VWAP_ALIGNED(+15)")
     else:
-        score -= 5
-        reasons.append("VWAP_AGAINST(-5)")
+        reasons.append("VWAP_AGAINST")
 
-    # Clear path (no HVN blocking)
+    # Clear path
     if clear_path:
         score += 15
         reasons.append("CLEAR_PATH(+15)")
     else:
-        score -= 10
-        reasons.append("HVN_BLOCK(-10)")
+        reasons.append("HVN_BLOCK")
 
     # Volume expansion
     if vol_expanding:
@@ -211,8 +195,8 @@ def _score_squeeze_signal(
         score += 10
         reasons.append(f"D1_ALIGNED(+10)")
     elif (action == "BUY" and d1_trend == "DOWN") or (action == "SELL" and d1_trend == "UP"):
-        score -= 10
-        reasons.append(f"D1_COUNTER(-10)")
+        score -= 5
+        reasons.append(f"D1_COUNTER(-5)")
     else:
         reasons.append(f"D1_{d1_trend}")
 
@@ -231,37 +215,28 @@ def _score_squeeze_signal(
 
 def check_squeeze_signal(
     config: dict,
-    # Backtest overrides
+    df_m5_override:  Optional[pd.DataFrame] = None,
     df_m15_override: Optional[pd.DataFrame] = None,
     df_h1_override:  Optional[pd.DataFrame] = None,
     df_h4_override:  Optional[pd.DataFrame] = None,
     df_d1_override:  Optional[pd.DataFrame] = None,
 ) -> Optional[Signal]:
-    """
-    Bollinger Band Squeeze with VWAP & Volume Profile signal.
-
-    Returns a Signal if all conditions are met, else None.
-    Accepts optional DataFrame overrides for backtesting without MT5.
-    """
     symbol = config.get("mt5_symbol", "XAUUSD")
 
-    # ── 1. Session gate ───────────────────────────────────────────────────────
+    # 1. Session gate
     can_trade, session, session_params = is_tradeable()
     if not can_trade:
         return None
 
-    log.info("[SQ] %s | Session: %s", thai_time_str(), session)
-
-    # ── 2. Spread + cooldown ──────────────────────────────────────────────────
+    # 2. Spread + cooldown
     if MT5_AVAILABLE and df_m15_override is None:
         spread_ok, spread_pips = check_spread(symbol, config.get("gold_max_spread_pips", 80))
         if not spread_ok:
-            log.info("[SQ] Spread %.1f too high — skip", spread_pips)
             return None
         if is_in_cooldown(symbol):
             return None
 
-    # ── 3. Load data ──────────────────────────────────────────────────────────
+    # 3. Load data
     df_m15 = _get_ohlcv(symbol, "M15", 300, df_m15_override)
     df_h1  = _get_ohlcv(symbol, "H1",  300, df_h1_override)
     df_h4  = _get_ohlcv(symbol, "H4",  200, df_h4_override)
@@ -269,170 +244,104 @@ def check_squeeze_signal(
 
     if any(d is None or (isinstance(d, pd.DataFrame) and len(d) < 50)
            for d in [df_m15, df_h1, df_h4]):
-        log.warning("[SQ] Insufficient data — skip")
         return None
 
     current_price = df_m15["close"].iloc[-1]
     current_atr   = atr(df_m15, 14).iloc[-1]
 
-    # ── 4. Squeeze analysis ───────────────────────────────────────────────────
+    # 4. Squeeze analysis
     is_squeezed, just_released, squeeze_duration = analyze_squeeze(df_m15)
 
-    # We need a squeeze release (breakout) to enter
-    if not just_released:
-        log.info("[SQ] No squeeze release — is_squeezed=%s, duration=%d",
-                 is_squeezed, squeeze_duration)
-        return None
-
-    # Squeeze must have been active long enough
-    if squeeze_duration < SQ_PARAMS["min_squeeze_bars"]:
-        log.info("[SQ] Squeeze too short (%d bars < %d) — skip",
-                 squeeze_duration, SQ_PARAMS["min_squeeze_bars"])
-        return None
-
-    if squeeze_duration > SQ_PARAMS["max_squeeze_bars"]:
-        log.info("[SQ] Squeeze too long (%d bars > %d) — stale, skip",
-                 squeeze_duration, SQ_PARAMS["max_squeeze_bars"])
-        return None
-
-    log.info("[SQ] Squeeze released after %d bars", squeeze_duration)
-
-    # ── 5. Bollinger Bands & Keltner Channels ─────────────────────────────────
+    # We need a squeeze release OR a strong breakout from a current squeeze
     bb_upper_s, bb_mid_s, bb_lower_s = bollinger_bands(
         df_m15["close"], SQ_PARAMS["bb_period"], SQ_PARAMS["bb_std"]
     )
-    kc_upper_s, kc_mid_s, kc_lower_s = keltner_channels(
-        df_m15, SQ_PARAMS["kc_period"], SQ_PARAMS["kc_atr_period"], SQ_PARAMS["kc_mult"]
-    )
-
     bb_upper_val = bb_upper_s.iloc[-1]
     bb_lower_val = bb_lower_s.iloc[-1]
-    kc_mid_val   = kc_mid_s.iloc[-1]
 
-    # ── 6. Determine breakout direction ───────────────────────────────────────
-    # Breakout direction from squeeze
-    prev_close = df_m15["close"].iloc[-2]
-    curr_close = df_m15["close"].iloc[-1]
+    strong_breakout = (current_price > bb_upper_val + 0.2 * current_atr) or \
+                      (current_price < bb_lower_val - 0.2 * current_atr)
 
-    if curr_close > bb_upper_val:
-        action = "BUY"
-    elif curr_close < bb_lower_val:
-        action = "SELL"
-    else:
-        # Price is still inside the bands — check momentum for direction
-        momentum = bb_squeeze_momentum(df_m15, SQ_PARAMS["momentum_period"])
-        mom_val = momentum.iloc[-1]
-        if pd.isna(mom_val):
-            log.info("[SQ] No clear breakout direction — skip")
-            return None
-        action = "BUY" if mom_val > 0 else "SELL"
-        log.info("[SQ] Direction from momentum: %s (%.4f)", action, mom_val)
+    if not (just_released or (is_squeezed and strong_breakout)):
+        return None
 
-    # ── 7. Momentum confirmation ──────────────────────────────────────────────
+    if squeeze_duration < SQ_PARAMS["min_squeeze_bars"]:
+        return None
+
+    # 5. Determine action
     momentum = bb_squeeze_momentum(df_m15, SQ_PARAMS["momentum_period"])
     mom_val = momentum.iloc[-1]
-    momentum_positive = (not pd.isna(mom_val)) and (mom_val > 0)
+    if pd.isna(mom_val):
+        return None
+    
+    action = "BUY" if mom_val > 0 else "SELL"
+    momentum_positive = (mom_val > 0)
 
-    # ── 8. VWAP ───────────────────────────────────────────────────────────────
+    # 6. VWAP
     vwap_val = vwap(df_m15, anchor="rolling", period=SQ_PARAMS["vwap_period"]).iloc[-1]
     if pd.isna(vwap_val):
-        vwap_val = kc_mid_val
+        vwap_val = bb_mid_s.iloc[-1]
     above_vwap = current_price > vwap_val
 
-    # ── 9. Volume confirmation ────────────────────────────────────────────────
+    # 7. Volume confirmation
     vol_ok, vol_ratio = check_volume_confirmation(
         df_m15, min_volume_ratio=SQ_PARAMS["vol_ratio_threshold"]
     )
     vol_expanding = vol_ok
 
-    # ── 10. Volume Profile — check for clear path ─────────────────────────────
+    # 8. Volume Profile
     vp = volume_profile(df_h1, bins=SQ_PARAMS["vp_bins"])
-    poc = vp.poc
-
-    # Check if there's an HVN blocking the breakout direction
     clear_path = True
     if action == "BUY":
-        # Check if nearest HVN above current price is far enough
         hvn_above = [h for h in vp.hvn_levels if h > current_price]
         if hvn_above:
             nearest_hvn_above = min(hvn_above)
-            dist_to_hvn = (nearest_hvn_above - current_price) / current_price
-            if dist_to_hvn < SQ_PARAMS["hvn_clear_path_pct"]:
+            if (nearest_hvn_above - current_price) / current_price < SQ_PARAMS["hvn_clear_path_pct"]:
                 clear_path = False
-                log.info("[SQ] HVN blocking BUY at %.2f (%.2f%% away)",
-                         nearest_hvn_above, dist_to_hvn * 100)
     else:
         hvn_below = [h for h in vp.hvn_levels if h < current_price]
         if hvn_below:
             nearest_hvn_below = max(hvn_below)
-            dist_to_hvn = (current_price - nearest_hvn_below) / current_price
-            if dist_to_hvn < SQ_PARAMS["hvn_clear_path_pct"]:
+            if (current_price - nearest_hvn_below) / current_price < SQ_PARAMS["hvn_clear_path_pct"]:
                 clear_path = False
-                log.info("[SQ] HVN blocking SELL at %.2f (%.2f%% away)",
-                         nearest_hvn_below, dist_to_hvn * 100)
 
-    # ── 11. D1 trend ─────────────────────────────────────────────────────────
+    # 9. D1 trend
     d1_trend = "UNKNOWN"
     if df_d1 is not None and len(df_d1) >= 60:
         d1_trend = get_trend(df_d1, fast=21, slow=55)
 
-    # ── 12. Scoring ───────────────────────────────────────────────────────────
+    # 10. Scoring
     score, reasons = _score_squeeze_signal(
         action, squeeze_duration, momentum_positive,
         above_vwap, clear_path, vol_expanding, d1_trend, session,
     )
 
-    log.info("[SQ] Score: %d | %s", score, " | ".join(reasons))
-
     if score < SQ_PARAMS["min_score"]:
-        log.info("[SQ] Score %d < %d — skip", score, SQ_PARAMS["min_score"])
         return None
 
-    # ── 13. SL/TP calculation ─────────────────────────────────────────────────
-    # SL: at the KC midline (EMA) with ATR buffer — if squeeze fails, price returns to mean
+    # 11. SL/TP
+    kc_upper_s, kc_mid_s, kc_lower_s = keltner_channels(
+        df_m15, SQ_PARAMS["kc_period"], SQ_PARAMS["kc_atr_period"], SQ_PARAMS["kc_mult"]
+    )
+    kc_mid_val = kc_mid_s.iloc[-1]
+
     if action == "BUY":
         sl = kc_mid_val - current_atr * SQ_PARAMS["atr_sl_mult"]
-
-        # TP: nearest HVN above current price (first magnet)
         hvn_above = [h for h in vp.hvn_levels if h > current_price * 1.001]
-        if hvn_above:
-            tp = min(hvn_above)
-        else:
-            # Fallback: 2x risk
-            risk_pts = current_price - sl
-            tp = current_price + risk_pts * 2.0
-
-    else:  # SELL
+        tp = min(hvn_above) if hvn_above else current_price + (current_price - sl) * 2.0
+    else:
         sl = kc_mid_val + current_atr * SQ_PARAMS["atr_sl_mult"]
-
         hvn_below = [h for h in vp.hvn_levels if h < current_price * 0.999]
-        if hvn_below:
-            tp = max(hvn_below)
-        else:
-            risk_pts = sl - current_price
-            tp = current_price - risk_pts * 2.0
-
-    # Validate SL/TP with MT5 constraints
-    if MT5_AVAILABLE and df_m15_override is None:
-        sym_info = mt5.symbol_info(symbol)
-        if sym_info:
-            min_stop = sym_info.trade_stops_level * sym_info.point
-            tick = mt5.symbol_info_tick(symbol)
-            spread_buf = (tick.ask - tick.bid) * 2 if tick else 0
-            if action == "BUY":
-                sl = min(sl, current_price - min_stop - spread_buf)
-            else:
-                sl = max(sl, current_price + min_stop + spread_buf)
+        tp = max(hvn_below) if hvn_below else current_price - (sl - current_price) * 2.0
 
     risk_pts   = abs(current_price - sl)
     reward_pts = abs(tp - current_price)
     rr_ratio   = reward_pts / risk_pts if risk_pts > 0 else 0
 
     if rr_ratio < SQ_PARAMS["min_rr"]:
-        log.info("[SQ] RR %.2f too low — skip", rr_ratio)
         return None
 
-    # ── 14. Position sizing ───────────────────────────────────────────────────
+    # 12. Position sizing
     risk_pct = config.get("gold_risk_pct", 0.5)
     lot = calculate_lot_size(
         config.get("gold_account_balance", 1000),
@@ -441,25 +350,7 @@ def check_squeeze_signal(
         config.get("gold_lot_base", 0.01),
         config.get("gold_max_lot", 5.0),
     )
-    risk_usdt   = config.get("gold_account_balance", 1000) * risk_pct / 100
     partial_tps = calculate_partial_tp(current_price, action, sl, rr_ratio)
-
-    # ── 15. Build reason string ───────────────────────────────────────────────
-    reason = (
-        f"{session} | BBSqueeze | Score:{score} | "
-        f"SQ_Duration:{squeeze_duration}bars | "
-        f"BB=[{bb_lower_val:.1f},{bb_upper_val:.1f}] | "
-        f"VWAP:{vwap_val:.1f} | POC:{poc:.1f} | "
-        f"Momentum:{'POS' if momentum_positive else 'NEG'} | "
-        f"ClearPath:{clear_path} | "
-        f"RR:{rr_ratio:.1f} | VOL:{vol_ratio:.1f}x | "
-        f"{' | '.join(reasons)}"
-    )
-
-    log.info(
-        "[SQ] SIGNAL: %s | Score:%d | Lot:%.3f | SL:%.2f | TP:%.2f | RR:%.2f",
-        action, score, lot, sl, tp, rr_ratio,
-    )
 
     return Signal(
         market="GOLD",
@@ -470,16 +361,15 @@ def check_squeeze_signal(
         tp=round(tp, 2),
         lot_or_qty=lot,
         score=score,
-        reason=reason,
-        sr_level=poc,
-        sr_type="SUPPORT" if action == "BUY" else "RESISTANCE",
-        zone_strength=squeeze_duration,
+        reason=f"{session} | BBSqueeze | Score:{score} | SQ:{squeeze_duration}b | {' | '.join(reasons)}",
+        sr_level=current_price,
+        sr_type="NONE",
+        zone_strength=0,
         trend_1h=d1_trend,
-        rsi=rsi(df_m15["close"], 14).iloc[-1],
-        risk_usdt=risk_usdt,
+        rsi=0.0,
+        risk_usdt=risk_pct * config.get("gold_account_balance", 1000) / 100,
         partial_tps=partial_tps,
         trailing_stop_atr_mult=1.5,
         rr_ratio=rr_ratio,
         atr_value=current_atr,
-        timestamp=datetime.now(timezone.utc),
     )
