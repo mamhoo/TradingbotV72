@@ -95,6 +95,8 @@ def check_volume_confirmation(
 # ── Spread check ──────────────────────────────────────────────────────────────
 
 def check_spread(symbol: str, max_spread_pips: float) -> Tuple[bool, float]:
+    if not MT5_AVAILABLE or mt5 is None:
+        return True, 0.0
     tick = mt5.symbol_info_tick(symbol)
     info = mt5.symbol_info(symbol)
     if tick is None or info is None:

@@ -25,7 +25,12 @@ TP placement: At the nearest BSL (buy-side liquidity) or next swing high
 
 import logging
 import pandas as pd
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    mt5 = None
+    MT5_AVAILABLE = False
 from typing import Optional, Tuple
 from datetime import datetime, timezone
 
@@ -47,7 +52,14 @@ from session_config import is_tradeable, thai_time_str
 log = logging.getLogger(__name__)
 
 
-def check_gold_signal_smc(config: dict) -> Optional[Signal]:
+def check_gold_signal_smc(
+    config: dict,
+    df_m5_override:  Optional[pd.DataFrame] = None,
+    df_m15_override: Optional[pd.DataFrame] = None,
+    df_h1_override:  Optional[pd.DataFrame] = None,
+    df_h4_override:  Optional[pd.DataFrame] = None,
+    df_d1_override:  Optional[pd.DataFrame] = None,
+) -> Optional[Signal]:
     """
     SMC-based Gold signal.
     Returns a Signal if all conditions met, else None.
@@ -62,21 +74,21 @@ def check_gold_signal_smc(config: dict) -> Optional[Signal]:
     log.info("[SMC] %s | Session: %s", thai_time_str(), session)
 
     # ── 2. Spread + cooldown ──────────────────────────────────────────────
-    spread_ok, spread_pips = check_spread(symbol, config.get("gold_max_spread_pips", 80))
-    if not spread_ok:
-        log.info("[SMC] Spread %.1f too high — skip", spread_pips)
-        return None
+    if MT5_AVAILABLE and df_m15_override is None:
+        spread_ok, spread_pips = check_spread(symbol, config.get("gold_max_spread_pips", 80))
+        if not spread_ok:
+            log.info("[SMC] Spread %.1f too high — skip", spread_pips)
+            return None
 
-    if is_in_cooldown(symbol):
-        return None
+        if is_in_cooldown(symbol):
+            return None
 
-    # ── 3. Load data ──────────────────────────────────────────────────────
-    df_m15 = get_mt5_ohlcv(symbol, "M15", 100)
-    df_h1  = get_mt5_ohlcv(symbol, "H1",  200)
-    df_h4  = get_mt5_ohlcv(symbol, "H4",  150)
-    df_d1  = get_mt5_ohlcv(symbol, "D1",  60)
-
-    # [FIX] Robust check for None or empty DataFrames
+    # ── 4. Load data ─────────────────────────────────────────────────────────
+    df_m5  = df_m5_override  if df_m5_override  is not None else get_mt5_ohlcv(symbol, "M5",  200)
+    df_m15 = df_m15_override if df_m15_override is not None else get_mt5_ohlcv(symbol, "M15", 200)
+    df_h1  = df_h1_override  if df_h1_override  is not None else get_mt5_ohlcv(symbol, "H1",  300)
+    df_h4  = df_h4_override  if df_h4_override  is not None else get_mt5_ohlcv(symbol, "H4",  200)
+    df_d1  = df_d1_override  if df_d1_override  is not None else get_mt5_ohlcv(symbol, "D1",  100)
     if any(d is None or (isinstance(d, pd.DataFrame) and d.empty) for d in [df_m15, df_h1, df_h4]):
         log.warning("[SMC] Missing or empty data — skip")
         return None
@@ -86,7 +98,11 @@ def check_gold_signal_smc(config: dict) -> Optional[Signal]:
 
     # ── 4. Volume confirmation ────────────────────────────────────────────
     # [FIX] Avoid ambiguous DataFrame truth value check
-    df_vol = get_mt5_ohlcv(symbol, "M5", 50)
+    if MT5_AVAILABLE and df_m15_override is None:
+        df_vol = get_mt5_ohlcv(symbol, "M5", 50)
+    else:
+        df_vol = None
+        
     # Use .empty for robust DataFrame check
     if df_vol is None or df_vol.empty:
         df_vol = df_m15
@@ -286,7 +302,14 @@ def check_gold_signal_smc(config: dict) -> Optional[Signal]:
 
 # ── Combined mode: run both strategies, take the higher score ────────────────
 
-def check_gold_signal_combined(config: dict) -> Optional[Signal]:
+def check_gold_signal_combined(
+    config: dict,
+    df_m5_override:  Optional[pd.DataFrame] = None,
+    df_m15_override: Optional[pd.DataFrame] = None,
+    df_h1_override:  Optional[pd.DataFrame] = None,
+    df_h4_override:  Optional[pd.DataFrame] = None,
+    df_d1_override:  Optional[pd.DataFrame] = None,
+) -> Optional[Signal]:
     """
     Run both the classic (EMA/RSI/MACD/SR) strategy AND the SMC strategy.
     Return whichever produces the higher-scoring signal, or None if neither fires.
@@ -300,12 +323,26 @@ def check_gold_signal_combined(config: dict) -> Optional[Signal]:
     sig_smc     = None
 
     try:
-        sig_classic = classic_signal(config)
+        sig_classic = classic_signal(
+            config, 
+            df_m5_override=df_m5_override, 
+            df_m15_override=df_m15_override, 
+            df_h1_override=df_h1_override, 
+            df_h4_override=df_h4_override, 
+            df_d1_override=df_d1_override
+        )
     except Exception as e:
         log.error("[COMBINED] Classic signal error: %s", e)
 
     try:
-        sig_smc = check_gold_signal_smc(config)
+        sig_smc = check_gold_signal_smc(
+            config, 
+            df_m5_override=df_m5_override, 
+            df_m15_override=df_m15_override, 
+            df_h1_override=df_h1_override, 
+            df_h4_override=df_h4_override, 
+            df_d1_override=df_d1_override
+        )
     except Exception as e:
         log.error("[COMBINED] SMC signal error: %s", e)
 

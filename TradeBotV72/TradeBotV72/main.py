@@ -332,12 +332,12 @@ def run_gold():
             notifier.send_plain("[BOT] Warmup complete — now placing orders")
 
     try:
-        # [FIX] Use combined SMC + Classic strategy for higher quality signals
-        signal = check_gold_signal_combined(CONFIG)
+        # [PRIORITY] Use Optimized BB Squeeze as the primary strategy
+        signal = check_squeeze_signal(CONFIG)
         
-        # [NEW] Check BB Squeeze strategy if no signal from combined strategy
+        # [SECONDARY] Check combined SMC + Classic if no squeeze signal
         if signal is None:
-            signal = check_squeeze_signal(CONFIG)
+            signal = check_gold_signal_combined(CONFIG)
             
         if signal is None:
             return

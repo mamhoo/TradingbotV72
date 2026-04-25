@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from gold_strategy import check_gold_signal
+from smc_gold_strategy import check_gold_signal_combined
 from bb_squeeze_strategy import check_squeeze_signal
 
 def download_gold_data(period="1y", interval="1h"):
@@ -184,12 +185,16 @@ if __name__ == "__main__":
     
     log.info("\nRunning Backtest for Original Strategy...")
     original_results = backtester.run(check_gold_signal, "Original")
+
+    log.info("\nRunning Backtest for Combined SMC + Classic Strategy...")
+    smc_results = backtester.run(check_gold_signal_combined, "Combined_SMC")
     
-    log.info("Running Backtest for Optimized BB Squeeze Strategy...")
+    log.info("\nRunning Backtest for Optimized BB Squeeze Strategy...")
     squeeze_results = backtester.run(check_squeeze_signal, "BBSqueeze_Optimized")
     
     results = {
         "Original": original_results,
+        "Combined_SMC": smc_results,
         "BBSqueeze_Optimized": squeeze_results
     }
     
