@@ -27,6 +27,7 @@ from gold_strategy import (
 )
 
 from smc_gold_strategy import check_gold_signal_combined
+from bb_squeeze_strategy import check_squeeze_signal
 
 from crypto_strategy import check_crypto_signal, execute_crypto_trade, get_exchange
 from risk_manager import RiskManager
@@ -333,8 +334,14 @@ def run_gold():
     try:
         # [FIX] Use combined SMC + Classic strategy for higher quality signals
         signal = check_gold_signal_combined(CONFIG)
+        
+        # [NEW] Check BB Squeeze strategy if no signal from combined strategy
+        if signal is None:
+            signal = check_squeeze_signal(CONFIG)
+            
         if signal is None:
             return
+            
         if not risk.can_trade(signal):
             return
 
