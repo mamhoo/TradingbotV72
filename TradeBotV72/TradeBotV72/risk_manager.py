@@ -1,13 +1,20 @@
 """
-risk_manager.py — SUPER TRADER v7.0 Risk Management
+risk_manager.py — SUPER TRADER v7.3 Risk Management
 
-FIXES from v6.0:
-  [CRITICAL] _get_account_balance() was adding Gold + Crypto balances together,
-             making the daily loss % denominator wrong. Gold $50 + Crypto $1000 = $1050
-             denominator meant 1.5% limit was actually ~48% of Gold balance.
-             Now uses per-market balance based on signal.market.
-  [FIX]      can_trade() now passes signal.market to balance lookup
-  [FIX]      status() shows per-market breakdown
+FIXES from v7.0:
+  [CRITICAL] max_consecutive_losses raised from 2 → 3.
+             2 was too aggressive: early-session warmup losses immediately
+             halted the bot before it could recover. 3 allows one recovery
+             trade while still protecting against runaway losses.
+  [FIX]      Added startup_grace_trades: the first N trades of each day
+             are exempt from the consecutive-loss halt. This prevents the
+             first-period loss pattern where indicator warmup causes early
+             bad entries that permanently disable the bot for the day.
+  [FIX]      Daily loss limit raised from 1.5% → 2.0% to give the bot
+             room to recover from early losses rather than halting too soon.
+  [IMPROVE]  get_risk_multiplier() now also reduces size after a daily loss
+             streak (not just consecutive losses), giving a smoother
+             position-sizing response to adverse conditions.
 """
 
 import logging
@@ -29,7 +36,14 @@ class RiskManager:
 
         # ── Circuit breaker limits ────────────────────────────────────────────
         self.consecutive_losses: int = 0
-        self.max_consecutive_losses: int = 2
+        # [FIX v7.3] Raised from 2 → 3: prevents first-period warmup losses
+        # from permanently halting the bot before it can recover.
+        self.max_consecutive_losses: int = 3
+
+        # [FIX v7.3] Grace period: first N trades per day bypass the
+        # consecutive-loss halt so indicator warmup doesn't kill the session.
+        self.startup_grace_trades: int = 2
+        self.trades_today: int = 0
 
         self.consecutive_wins: int = 0
 
@@ -38,8 +52,10 @@ class RiskManager:
         self.max_trades_per_direction: int = 1
         self.max_daily_trades: int = config.get("gold_max_daily_trades", 4)
 
-        # ── Daily loss limit ──────────────────────────────────────────────────
-        self.max_daily_loss_pct: float = config.get("max_daily_loss_pct", 1.5)
+        # ── Daily loss limit ──────────────────────────────────────────────
+        # [FIX v7.3] Raised from 1.5% → 2.0% so bot can recover from
+        # early-period losses rather than halting immediately.
+        self.max_daily_loss_pct: float = config.get("max_daily_loss_pct", 2.0)
 
         # ── Per-symbol loss cap ───────────────────────────────────────────────
         self.symbol_pnl: dict = {}
@@ -62,6 +78,7 @@ class RiskManager:
             )
             self.daily_pnl = 0.0
             self.daily_trades = 0
+            self.trades_today = 0  # [FIX v7.3] Reset grace counter
             self.consecutive_losses = 0
             self.consecutive_wins = 0
             self.symbol_pnl = {}
@@ -100,6 +117,12 @@ class RiskManager:
             base += min(0.4, self.consecutive_wins * 0.15)
         if self.consecutive_losses >= 1:
             base -= min(0.5, self.consecutive_losses * 0.25)
+        # [OPT v7.3] Also reduce size when daily P&L is negative
+        if self.daily_pnl < 0:
+            daily_loss_factor = max(0.5, 1.0 + self.daily_pnl / max(
+                abs(self.daily_pnl) * 2, 1.0
+            ))
+            base *= daily_loss_factor
         if self.current_atr > 0:
             vol_factor = min(1.0, self.normal_atr / max(self.current_atr, 0.1))
             base *= vol_factor
@@ -128,13 +151,24 @@ class RiskManager:
             log.warning("[RISK] Bot halted — manual reset required")
             return False
 
-        if self.consecutive_losses >= self.max_consecutive_losses:
+        # [FIX v7.3] Startup grace period: skip consecutive-loss halt for
+        # the first N trades of the day so indicator warmup doesn't kill
+        # the session before the bot has had a chance to find good setups.
+        in_grace = self.trades_today < self.startup_grace_trades
+
+        if not in_grace and self.consecutive_losses >= self.max_consecutive_losses:
             self.halted = True
             log.warning(
                 "[RISK] Consecutive loss limit hit (%d/%d) — halting",
                 self.consecutive_losses, self.max_consecutive_losses,
             )
             return False
+        elif in_grace and self.consecutive_losses >= self.max_consecutive_losses:
+            log.warning(
+                "[RISK] Consecutive losses %d/%d but within grace period (%d/%d trades) — continuing",
+                self.consecutive_losses, self.max_consecutive_losses,
+                self.trades_today, self.startup_grace_trades,
+            )
 
         if len(self.open_trades) >= self.max_open_trades:
             log.info("[RISK] Max open trades reached (%d/%d)",
@@ -196,6 +230,7 @@ class RiskManager:
     def register_trade(self, signal: Signal):
         self.open_trades.append(signal)
         self.daily_trades += 1
+        self.trades_today += 1  # [FIX v7.3] Track for grace period
         if hasattr(signal, "atr_value") and signal.atr_value > 0:
             self.current_atr = signal.atr_value
         log.info(
@@ -271,6 +306,7 @@ class RiskManager:
             f"Loss streak : {self.consecutive_losses}/{self.max_consecutive_losses}\n"
             f"Risk mult   : {risk_mult:.2f}x\n"
             f"Halted      : {self.halted}\n"
-            f"Max dir/sym : {self.max_trades_per_direction}\n"
-            f"Daily loss% : {self.max_daily_loss_pct}% limit (per-market)"
+        f"Max dir/sym : {self.max_trades_per_direction}\n"
+        f"Daily loss% : {self.max_daily_loss_pct}% limit (per-market)\n"
+        f"Grace trades: {self.trades_today}/{self.startup_grace_trades} (bypass halt if in grace)"
         )

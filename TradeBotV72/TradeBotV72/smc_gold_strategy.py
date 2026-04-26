@@ -250,12 +250,12 @@ def check_gold_signal_smc(
 
     # ── 12. Position sizing ───────────────────────────────────────────────
     risk_pct  = config.get("gold_risk_pct", 0.25)
+    # [FIX v7.3] Removed erroneous `symbol` positional arg — was binding to lot_base
     lot = calculate_lot_size(
         config.get("gold_account_balance", 1000),
         risk_pct,
         current_price, sl,
         current_atr,
-        symbol,
         config.get("gold_lot_base", 0.01),
         config.get("gold_max_lot", 5.0),
     )

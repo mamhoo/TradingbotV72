@@ -1,5 +1,5 @@
 """
-gold_strategy.py — SUPER TRADER v6.1
+gold_strategy.py — SUPER TRADER v7.3
 
 FIXES from v6.0:
   [CRITICAL] D1 gate: softened from hard-block to score penalty.
@@ -272,7 +272,8 @@ def check_not_chasing(df_m15, action: str, fast_ema: int = 21,
 # ── Dynamic R:R ───────────────────────────────────────────────────────────────
 
 def calculate_dynamic_rr(zone_strength: int, trend_alignment: str, session_bonus: bool) -> float:
-    base_rr   = 1.5
+    # [OPT v7.3] Base RR raised from 1.5 -> 2.0 for better P&L per trade
+    base_rr   = 2.0
     zone_bonus = min(zone_strength / 30, 1.0) * 0.75
     trend_bonus = 0.5 if trend_alignment in ("UP", "DOWN") else 0
     sess_bonus  = 0.25 if session_bonus else 0
@@ -283,17 +284,19 @@ def calculate_dynamic_rr(zone_strength: int, trend_alignment: str, session_bonus
 
 def calculate_partial_tp(entry: float, action: str, sl: float, rr_ratio: float) -> List[Tuple[float, float]]:
     risk = abs(entry - sl)
+    # [OPT v7.3] Improved partial TP: TP1=1R(40%), TP2=1.5R(35%), TP3=fullRR(25%)
+    # Locks in more profit on partial wins vs old 1R/2R/fullRR split
     if action == "BUY":
         return [
-            (entry + risk,            0.50),
-            (entry + 2 * risk,        0.30),
-            (entry + rr_ratio * risk, 0.20),
+            (entry + risk,            0.40),
+            (entry + 1.5 * risk,      0.35),
+            (entry + rr_ratio * risk, 0.25),
         ]
     else:
         return [
-            (entry - risk,            0.50),
-            (entry - 2 * risk,        0.30),
-            (entry - rr_ratio * risk, 0.20),
+            (entry - risk,            0.40),
+            (entry - 1.5 * risk,      0.35),
+            (entry - rr_ratio * risk, 0.25),
         ]
 
 
@@ -531,12 +534,12 @@ def check_gold_signal(
     h1_atr = atr(df_h1, 14).iloc[-1]
 
     if action == "BUY":
-        sl = current_price - h1_atr * 1.2 - spread_buf
+        sl = current_price - h1_atr * 1.0 - spread_buf  # [OPT v7.3] tightened from 1.2
         if (current_price - sl) < min_stop:
             sl = current_price - min_stop - spread_buf
         tp = current_price + (current_price - sl) * rr_ratio
     else:
-        sl = current_price + h1_atr * 1.2 + spread_buf
+        sl = current_price + h1_atr * 1.0 + spread_buf  # [OPT v7.3] tightened from 1.2
         if (sl - current_price) < min_stop:
             sl = current_price + min_stop + spread_buf
         tp = current_price - (sl - current_price) * rr_ratio
