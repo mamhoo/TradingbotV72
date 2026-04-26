@@ -62,7 +62,7 @@ BACKTEST_CONFIG = {
     "gold_lot_base":         0.01,
     "gold_max_lot":          5.0,
     "gold_min_score":        55,
-    "gold_min_volume_ratio": 1.2,
+    "gold_min_volume_ratio": 1.0,
     "gold_max_spread_pips":  80,
     "gold_max_entry_dist_pct": 0.006,
     "gold_sr_zone_pips":     8,
@@ -171,7 +171,10 @@ def resample_to_higher_tf(df_m15: pd.DataFrame, tf: str) -> pd.DataFrame:
         "close":  "last",
         "volume": "sum",
     }).dropna().reset_index()
-    resampled.rename(columns={"index": "time"}, inplace=True)
+    # If resample index is named 'time', reset_index() will keep it as 'time'
+    # If it's unnamed, it becomes 'index'
+    if "index" in resampled.columns:
+        resampled.rename(columns={"index": "time"}, inplace=True)
     return resampled
 
 

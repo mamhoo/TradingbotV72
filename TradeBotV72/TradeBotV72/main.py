@@ -28,6 +28,7 @@ from gold_strategy import (
 
 from smc_gold_strategy import check_gold_signal_combined
 from bb_squeeze_strategy import check_squeeze_signal
+from aggressive_scalper import check_aggressive_scalp
 
 from crypto_strategy import check_crypto_signal, execute_crypto_trade, get_exchange
 from risk_manager import RiskManager
@@ -332,10 +333,14 @@ def run_gold():
             notifier.send_plain("[BOT] Warmup complete — now placing orders")
 
     try:
-        # [PRIORITY] Use Optimized BB Squeeze as the primary strategy
-        signal = check_squeeze_signal(CONFIG)
+        # [PRIORITY 1] Aggressive Scalper for small accounts ($30 flip)
+        signal = check_aggressive_scalp(CONFIG)
+
+        # [PRIORITY 2] Use Optimized BB Squeeze
+        if signal is None:
+            signal = check_squeeze_signal(CONFIG)
         
-        # [SECONDARY] Check combined SMC + Classic if no squeeze signal
+        # [SECONDARY] Check combined SMC + Classic
         if signal is None:
             signal = check_gold_signal_combined(CONFIG)
             

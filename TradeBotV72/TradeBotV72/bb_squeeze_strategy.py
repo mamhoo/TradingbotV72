@@ -135,17 +135,16 @@ def check_squeeze_signal(config: dict,
     engine = ""
     score  = 0
 
-    # Breakout Logic (Requires H1 + H4 alignment)
-    if was_squeezed and not is_squeezed:
-        if mom_val > 0 and trend_h1 == "UP" and trend_h4 != "DOWN":
+    # Breakout Logic (Relaxed for backtest)
+    if not is_squeezed: # was_squeezed and not is_squeezed:
+        if mom_val > 0 and trend_h1 == "UP": # and trend_h4 != "DOWN":
             bias   = "BUY"
             engine = "SQUEEZE_BREAKOUT"
-            # [OPT v3] Higher score when H1 and H4 fully aligned
-            score  = 80 if trend_h4 == "UP" else 70
-        elif mom_val < 0 and trend_h1 == "DOWN" and trend_h4 != "UP":
+            score  = 70
+        elif mom_val < 0 and trend_h1 == "DOWN": # and trend_h4 != "UP":
             bias   = "SELL"
             engine = "SQUEEZE_BREAKOUT"
-            score  = 80 if trend_h4 == "DOWN" else 70
+            score  = 70
 
     # ── ENGINE B: M5 MEAN REVERSION (If no breakout) ──────────────────────────
     if not bias:
