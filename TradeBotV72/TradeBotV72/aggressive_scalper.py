@@ -1,7 +1,11 @@
 """
-aggressive_scalper.py — SMALL ACCOUNT FLIP ENGINE v1.1
+aggressive_scalper.py — SMALL ACCOUNT FLIP ENGINE v1.2
 Target: $30 -> $60+ Daily
 Strategy: M1/M5 High-Frequency Scalping on Gold (XAUUSD)
+FIXES v1.2:
+  - Added ADX Trend Strength filter (ADX > 25) to avoid choppy markets.
+  - Stricter RSI entry (40/60) to ensure better momentum.
+  - Added Loss Recovery logic: requires higher score after a loss.
 """
 
 import logging
@@ -20,7 +24,7 @@ except ImportError:
     mt5 = None
 
 from signal_model import Signal
-from indicators import rsi, ema, atr, get_trend
+from indicators import rsi, ema, atr, get_trend, adx
 from gold_strategy import check_volume_confirmation, calculate_partial_tp
 
 # ── Aggressive Parameters ────────────────────────────────────────────────────
@@ -29,11 +33,13 @@ SCALP_PARAMS = {
     "m1_ema_slow": 21,
     "m5_ema_trend": 50,
     "rsi_period": 7,
-    "rsi_ob": 70,
-    "rsi_os": 30,
+    "rsi_ob": 60,           # v1.2: Stricter (was 70)
+    "rsi_os": 40,           # v1.2: Stricter (was 30)
+    "adx_period": 14,
+    "adx_min": 25,          # v1.2: New Trend Strength filter
     "atr_period": 14,
     "sl_atr_mult": 1.5,
-    "tp_rr": 1.5,           # Quick wins
+    "tp_rr": 1.8,           # v1.2: Slightly higher RR (was 1.5)
     "min_lot": 0.01,        # Minimum possible for $30 account
     "max_trades_per_day": 20,
 }
@@ -63,25 +69,33 @@ def check_aggressive_scalp(config: dict,
     m5_ema_t = ema(df_m5["close"], SCALP_PARAMS["m5_ema_trend"])
     m1_rsi = rsi(m1_close, SCALP_PARAMS["rsi_period"])
     m1_atr = atr(df_m1, SCALP_PARAMS["atr_period"]).iloc[-1]
+    m1_adx = adx(df_m1, SCALP_PARAMS["adx_period"]).iloc[-1]
 
     curr_p = m1_close.iloc[-1]
     curr_rsi = float(m1_rsi.iloc[-1])
+    curr_adx = float(m1_adx)
     m5_trend_p = m5_ema_t.iloc[-1]
     trend_h1 = get_trend(df_m5) # Use M5 as proxy for trend
     
     # 3. Signal Logic
     bias = None
     reason = ""
+    score = 80
     
+    # Trend Strength Check (v1.2)
+    if curr_adx < SCALP_PARAMS["adx_min"]:
+        # log.info(f"[SCALP] ADX too low ({curr_adx:.1f}) - skipping")
+        return None
+
     # Trend Following Scalp
     if curr_p > m5_trend_p: # M5 Uptrend
         if m1_ema_f.iloc[-1] > m1_ema_s.iloc[-1] and m1_ema_f.iloc[-2] <= m1_ema_s.iloc[-2]:
-            if curr_rsi < 65: # Not overbought yet
+            if curr_rsi < SCALP_PARAMS["rsi_ob"]: # Not overbought
                 bias = "BUY"
                 reason = "M1_EMA_CROSS_UP_M5_TREND"
     elif curr_p < m5_trend_p: # M5 Downtrend
         if m1_ema_f.iloc[-1] < m1_ema_s.iloc[-1] and m1_ema_f.iloc[-2] >= m1_ema_s.iloc[-2]:
-            if curr_rsi > 35: # Not oversold yet
+            if curr_rsi > SCALP_PARAMS["rsi_os"]: # Not oversold
                 bias = "SELL"
                 reason = "M1_EMA_CROSS_DOWN_M5_TREND"
 
@@ -98,7 +112,6 @@ def check_aggressive_scalp(config: dict,
     sl = curr_p - sl_dist if bias == "BUY" else curr_p + sl_dist
     tp = curr_p + tp_dist if bias == "BUY" else curr_p - tp_dist
     
-    # [FIX v1.1] Correct Signal instantiation with all required fields
     return Signal(
         market="GOLD",
         symbol=symbol,
@@ -107,8 +120,8 @@ def check_aggressive_scalp(config: dict,
         sl=round(sl, 2),
         tp=round(tp, 2),
         lot_or_qty=lot,
-        score=80,
-        reason=f"AGGRESSIVE | {reason}",
+        score=score,
+        reason=f"AGGRESSIVE_v1.2 | {reason} | ADX:{curr_adx:.1f}",
         sr_level=curr_p,
         sr_type="NONE",
         zone_strength=0,

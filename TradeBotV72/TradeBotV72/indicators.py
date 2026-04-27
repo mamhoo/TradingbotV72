@@ -74,6 +74,28 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(com=period - 1, adjust=False).mean()
 
 
+def adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    Average Directional Index (ADX)
+    """
+    df = df.copy()
+    df['up_move'] = df['high'].diff()
+    df['down_move'] = df['low'].diff().abs()
+    
+    df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
+    df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
+    
+    tr = atr(df, period)
+    
+    df['plus_di'] = 100 * (df['plus_dm'].ewm(alpha=1/period, adjust=False).mean() / tr)
+    df['minus_di'] = 100 * (df['minus_dm'].ewm(alpha=1/period, adjust=False).mean() / tr)
+    
+    df['dx'] = 100 * (abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di']))
+    adx_series = df['dx'].ewm(alpha=1/period, adjust=False).mean()
+    
+    return adx_series
+
+
 def is_bullish_engulfing(df: pd.DataFrame) -> bool:
     if len(df) < 2:
         return False
