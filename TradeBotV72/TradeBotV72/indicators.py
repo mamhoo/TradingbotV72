@@ -16,18 +16,25 @@ def ema(series: pd.Series, period: int) -> pd.Series:
 
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    # Ensure series is numeric to avoid timedelta issues in diff/clip
-    # Using more robust type checking for different pandas versions
-    is_dt = pd.api.types.is_datetime64_any_dtype(series)
-    is_td = pd.api.types.is_timedelta64_dtype(series) if hasattr(pd.api.types, 'is_timedelta64_dtype') else False
+    # Ensure we are working with a Series of floats
+    if isinstance(series, pd.DataFrame):
+        # If a DataFrame was passed, take the first column
+        series = series.iloc[:, 0]
     
-    if is_dt or is_td:
-        series = pd.to_numeric(series, errors='coerce')
+    # Force conversion to numeric, coercing errors to NaN
+    # This handles cases where the series might contain strings or objects
+    series = pd.to_numeric(series, errors='coerce')
     
-    delta    = series.diff()
-    # clip(lower=0) can fail if delta contains timedeltas (e.g. if series was time-based)
-    gain     = delta.where(delta > 0, 0)
-    loss     = (-delta).where(delta < 0, 0)
+    delta = series.diff()
+    
+    # Explicitly handle the comparison to avoid timedelta/int issues
+    # We use np.where on the underlying values for maximum compatibility
+    delta_values = delta.values
+    gain_values = np.where(delta_values > 0, delta_values, 0.0)
+    loss_values = np.where(delta_values < 0, -delta_values, 0.0)
+    
+    gain = pd.Series(gain_values, index=delta.index)
+    loss = pd.Series(loss_values, index=delta.index)
     
     avg_gain = gain.ewm(com=period - 1, adjust=False).mean()
     avg_loss = loss.ewm(com=period - 1, adjust=False).mean()
