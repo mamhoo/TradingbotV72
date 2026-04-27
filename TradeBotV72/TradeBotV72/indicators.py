@@ -16,13 +16,22 @@ def ema(series: pd.Series, period: int) -> pd.Series:
 
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    # Ensure series is numeric to avoid timedelta issues in diff/clip
+    if pd.api.types.is_datetime64_any_dtype(series) or pd.api.types.is_timedelta64_any_dtype(series):
+        series = pd.to_numeric(series, errors='coerce')
+    
     delta    = series.diff()
-    gain     = delta.clip(lower=0)
-    loss     = -delta.clip(upper=0)
+    # clip(lower=0) can fail if delta contains timedeltas (e.g. if series was time-based)
+    gain     = delta.where(delta > 0, 0)
+    loss     = (-delta).where(delta < 0, 0)
+    
     avg_gain = gain.ewm(com=period - 1, adjust=False).mean()
     avg_loss = loss.ewm(com=period - 1, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    
+    # Avoid division by zero
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi_val = 100 - (100 / (1 + rs))
+    return rsi_val.fillna(50)  # Default to neutral 50 if no data
 
 
 def macd(series: pd.Series, fast=12, slow=26, signal=9):
