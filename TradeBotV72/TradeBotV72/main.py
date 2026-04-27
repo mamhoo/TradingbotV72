@@ -411,7 +411,7 @@ def run_all():
     # Having two separate time filters caused "Low-volume hour 22 UTC — skip Gold"
     # even during the Sydney/Tokyo session which session_config marks as active.
     run_gold()
-    run_crypto()
+    # run_crypto()  # [DISABLED] Focusing only on Gold as per user request
 
 
 def send_daily_summary():
