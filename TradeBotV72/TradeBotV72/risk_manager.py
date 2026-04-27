@@ -48,8 +48,8 @@ class RiskManager:
         self.consecutive_wins: int = 0
 
         # ── Trade count limits ────────────────────────────────────────────────
-        self.max_open_trades: int = 2
-        self.max_trades_per_direction: int = 1
+        self.max_open_trades: int = config.get("max_open_trades", 2)
+        self.max_trades_per_direction: int = config.get("max_trades_per_direction", 1)
         self.max_daily_trades: int = config.get("gold_max_daily_trades", 4)
 
         # ── Daily loss limit ──────────────────────────────────────────────

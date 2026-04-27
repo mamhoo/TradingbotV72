@@ -1,6 +1,6 @@
 """
-config.py — v7.4 AGGRESSIVE SMALL ACCOUNT FLIP
-Optimized for $30 balance to $30 daily profit.
+config.py — v7.4.7 STABLE SMALL ACCOUNT
+Reverted to v6.1 stable logic while keeping $30 balance sizing.
 """
 import os
 from dotenv import load_dotenv
@@ -41,33 +41,33 @@ CONFIG = {
     "api_secret":     os.getenv("API_SECRET", ""),
     "crypto_symbols": parse_list(os.getenv("CRYPTO_SYMBOLS", "")),
     
-    # ── Gold Strategy (AGGRESSIVE FLIP SETTINGS) ──────────────────────────────
+    # ── Gold Strategy (STABLE SETTINGS) ───────────────────────────────────────
     "gold_lot_base":        0.01,
     "gold_account_balance": 30.0,
-    "gold_risk_pct":        10.0,   # High risk for small account
-    "gold_rr_ratio":        1.5,    # Quick scalps
+    "gold_risk_pct":        5.0,    # Reduced risk for stability
+    "gold_rr_ratio":        2.0,    # Higher RR for profit
     "gold_sr_lookback":     200,
     "gold_sr_touches":      2,
     "gold_sr_zone_pips":    8,
-    "gold_rsi_period":      7,      # Faster RSI
+    "gold_rsi_period":      14,     # Standard RSI
     "gold_rsi_oversold":    30,
     "gold_rsi_overbought":  70,
-    "gold_ema_fast":        9,      # Faster EMA
-    "gold_ema_slow":        21,
+    "gold_ema_fast":        21,     # Standard EMA
+    "gold_ema_slow":        55,
     "gold_max_lot":         0.05,
     
     # ── Signal quality gates ──────────────────────────────────────────────────
-    "gold_min_volume_ratio":   1.0,  # No volume filter for high frequency
-    "gold_max_entry_dist_pct": 0.01,
-    "gold_min_score":          45,   # Lower score for more trades
-    "gold_volume_filter":      False,
+    "gold_min_volume_ratio":   1.2,  # Re-enabled volume filter
+    "gold_max_entry_dist_pct": 0.006,
+    "gold_min_score":          65,   # Higher score for quality
+    "gold_volume_filter":      True,
     
     # ── Spread Control ────────────────────────────────────────────────────────
-    "gold_max_spread_pips": 100,
+    "gold_max_spread_pips": 75,
     
     # ── Global Risk ───────────────────────────────────────────────────────────
-    "gold_scalp_rr":            1.5,
-    "max_open_trades":          3,   # Allow more concurrent scalps
-    "max_trades_per_direction": 2,
-    "max_daily_loss_pct":       20.0, # High risk tolerance for flip
+    "gold_scalp_rr":            2.0,
+    "max_open_trades":          2,
+    "max_trades_per_direction": 1,
+    "max_daily_loss_pct":       5.0, # Safer daily loss limit
 }

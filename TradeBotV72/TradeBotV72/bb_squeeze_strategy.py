@@ -1,23 +1,9 @@
 """
-bb_squeeze_strategy.py — EVOLVED DUAL-ENGINE MODE v3
-
-OPTIMIZATIONS from v2:
-  [CRITICAL] Dynamic lot sizing: replaced hardcoded 0.01 lot with proper
-             risk-based sizing using account balance and ATR-adjusted SL distance.
-             Fixed lot was the primary reason P&L was low despite high win rate.
-  [CRITICAL] Improved RR targets: SQUEEZE_BREAKOUT now uses 2.5R (was 2.0R),
-             M5_REVERSION uses 1.8R. Higher RR increases profit per win.
-  [FIX]      Session-based lot scaling: trades during LONDON_NY_OVERLAP get
-             1.25x lot multiplier; low-liquidity sessions get 0.75x.
-  [FIX]      ATR-adaptive SL multiplier: SL tightened to 1.2x ATR (was 1.5x)
-             to reduce risk per trade while keeping the same RR.
-  [FIX]      Added H4 trend confirmation for M5_REVERSION engine to reduce
-             false signals during ranging H4 conditions.
-  [IMPROVE]  Score now reflects signal quality more accurately:
-             SQUEEZE_BREAKOUT with H1+H4 alignment = 80 (was 70)
-             SQUEEZE_BREAKOUT with H1 only = 70 (was 70)
-             M5_REVERSION = 55 (was 50)
-  [IMPROVE]  Partial TP levels added for better trade management.
+bb_squeeze_strategy.py — EVOLVED DUAL-ENGINE MODE v3.1
+FIXES v3.1:
+  - [CRITICAL] Fixed breakout logic: now correctly requires a transition 
+               from SQUEEZE to NO-SQUEEZE (was incorrectly firing on every bar).
+  - [CRITICAL] Added H4 trend confirmation for breakouts to prevent counter-trend traps.
 """
 
 import logging
@@ -46,7 +32,7 @@ from gold_strategy import (
 )
 from session_config import is_tradeable, thai_time_str
 
-# ── Evolved Parameters v3 ────────────────────────────────────────────────────
+# ── Evolved Parameters v3.1 ──────────────────────────────────────────────────
 EVO_PARAMS = {
     "bb_period":            20,
     "bb_std":               2.0,
@@ -54,18 +40,14 @@ EVO_PARAMS = {
     "kc_atr_period":        10,
     "kc_mult":              1.5,
     "min_squeeze_bars":     1,
-    # [OPT] Higher RR targets to improve P&L per trade
-    "target_rr_breakout":   2.5,   # v3: 2.0 → 2.5 for squeeze breakout
-    "target_rr_reversion":  1.8,   # v3: new — mean reversion uses tighter RR
-    # [OPT] Tighter SL to reduce risk per trade (better risk-adjusted returns)
-    "atr_sl_mult":          1.2,   # v3: 1.5 → 1.2
+    "target_rr_breakout":   2.5,
+    "target_rr_reversion":  1.8,
+    "atr_sl_mult":          1.2,
     "vol_ratio_threshold":  1.2,
-    # [OPT] Stricter M5 RSI thresholds for mean reversion quality
-    "m5_rsi_ob":            78,    # v3: 80 → 78 (slightly more signals, still high quality)
-    "m5_rsi_os":            22,    # v3: 20 → 22
-    # [OPT] Session lot multipliers
-    "lot_mult_overlap":     1.25,  # v3: London/NY overlap gets bigger size
-    "lot_mult_low_liq":     0.75,  # v3: Sydney/Tokyo gets smaller size
+    "m5_rsi_ob":            78,
+    "m5_rsi_os":            22,
+    "lot_mult_overlap":     1.25,
+    "lot_mult_low_liq":     0.75,
 }
 
 
@@ -80,16 +62,11 @@ def _get_ohlcv(symbol: str, tf_str: str, bars: int = 300,
 
 
 def _get_session_lot_multiplier(session: str) -> float:
-    """
-    [OPT v3] Scale lot size by session liquidity.
-    London/NY Overlap = highest liquidity → larger size.
-    Sydney/Tokyo = lowest liquidity → smaller size.
-    """
     if session == "LONDON_NY_OVERLAP":
         return EVO_PARAMS["lot_mult_overlap"]
     elif session in ("SYDNEY_TOKYO",):
         return EVO_PARAMS["lot_mult_low_liq"]
-    return 1.0  # LONDON, NEW_YORK = normal size
+    return 1.0
 
 
 def check_squeeze_signal(config: dict,
@@ -135,16 +112,17 @@ def check_squeeze_signal(config: dict,
     engine = ""
     score  = 0
 
-    # Breakout Logic (Relaxed for backtest)
-    if not is_squeezed: # was_squeezed and not is_squeezed:
-        if mom_val > 0 and trend_h1 == "UP": # and trend_h4 != "DOWN":
+    # [FIX v3.1] Correct Breakout Logic: must be coming OUT of a squeeze
+    if was_squeezed and not is_squeezed:
+        # [FIX v3.1] Require H4 trend alignment for breakouts
+        if mom_val > 0 and trend_h1 == "UP" and trend_h4 != "DOWN":
             bias   = "BUY"
             engine = "SQUEEZE_BREAKOUT"
-            score  = 70
-        elif mom_val < 0 and trend_h1 == "DOWN": # and trend_h4 != "UP":
+            score  = 80
+        elif mom_val < 0 and trend_h1 == "DOWN" and trend_h4 != "UP":
             bias   = "SELL"
             engine = "SQUEEZE_BREAKOUT"
-            score  = 70
+            score  = 80
 
     # ── ENGINE B: M5 MEAN REVERSION (If no breakout) ──────────────────────────
     if not bias:
@@ -155,7 +133,6 @@ def check_squeeze_signal(config: dict,
                 val = val.iloc[0]
             rsi_m5 = float(val)
 
-            # [OPT v3] Added H4 confirmation to reduce false mean-reversion signals
             if rsi_m5 >= EVO_PARAMS["m5_rsi_ob"] and trend_h1 == "DOWN" and trend_h4 != "UP":
                 bias   = "SELL"
                 engine = "M5_REVERSION"
@@ -173,10 +150,8 @@ def check_squeeze_signal(config: dict,
     if not vol_ok:
         return None
 
-    # 4. Risk Management — [OPT v3] Dynamic lot sizing + session scaling
+    # 4. Risk Management
     sl_dist = current_atr * EVO_PARAMS["atr_sl_mult"]
-
-    # [OPT v3] Use different RR per engine
     target_rr = (
         EVO_PARAMS["target_rr_breakout"]
         if engine == "SQUEEZE_BREAKOUT"
@@ -187,7 +162,6 @@ def check_squeeze_signal(config: dict,
     sl = current_price - sl_dist if bias == "BUY" else current_price + sl_dist
     tp = current_price + tp_dist if bias == "BUY" else current_price - tp_dist
 
-    # [CRITICAL FIX v3] Dynamic lot sizing based on account balance and risk %
     risk_pct = config.get("gold_risk_pct", 1.0)
     account  = config.get("gold_account_balance", 1000)
     lot_base = config.get("gold_lot_base", 0.01)
@@ -203,18 +177,15 @@ def check_squeeze_signal(config: dict,
         max_lot,
     )
 
-    # [OPT v3] Session-based lot scaling
     session_mult = _get_session_lot_multiplier(session)
     lot = round(lot * session_mult / lot_base) * lot_base
     lot = max(lot_base, min(lot, max_lot))
 
     risk_usdt = account * risk_pct / 100 * session_mult
-
-    # [OPT v3] Partial TP levels for better trade management
     partial_tps = calculate_partial_tp(current_price, bias, sl, target_rr)
 
     reason = (
-        f"EVO_v3 | {engine} | {bias} | RR:{target_rr} | "
+        f"EVO_v3.1 | {engine} | {bias} | RR:{target_rr} | "
         f"Vol:{vol_ratio:.1f}x | Session:{session} | H1:{trend_h1} | H4:{trend_h4}"
     )
 

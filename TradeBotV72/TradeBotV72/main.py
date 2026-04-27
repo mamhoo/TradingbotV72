@@ -333,16 +333,16 @@ def run_gold():
             notifier.send_plain("[BOT] Warmup complete — now placing orders")
 
     try:
-        # [PRIORITY 1] Aggressive Scalper for small accounts ($30 flip)
-        signal = check_aggressive_scalp(CONFIG)
+        # [PRIORITY 1] Check combined SMC + Classic (Stable v6.1 Logic)
+        signal = check_gold_signal_combined(CONFIG)
 
         # [PRIORITY 2] Use Optimized BB Squeeze
         if signal is None:
             signal = check_squeeze_signal(CONFIG)
         
-        # [SECONDARY] Check combined SMC + Classic
+        # [SECONDARY] Aggressive Scalper (High Risk)
         if signal is None:
-            signal = check_gold_signal_combined(CONFIG)
+            signal = check_aggressive_scalp(CONFIG)
             
         if signal is None:
             return

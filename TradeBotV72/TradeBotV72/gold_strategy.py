@@ -128,12 +128,8 @@ def register_sl_hit(symbol: str):
 
 def check_daily_trend(symbol: str, action: str, fast: int = 21, slow: int = 55, df_d1_override: Optional[pd.DataFrame] = None) -> Tuple[bool, str, int]:
     """
-    FIX v6.1: Soft gate instead of hard block.
+    REVERT v7.4.7: Hard gate for stability (v6.1 logic).
     Returns (allowed, d1_trend, score_adjustment).
-    - Aligned with D1 → +15 bonus
-    - D1 neutral → +0, allow trade
-    - Against D1 → -15 penalty, but still allow if H1+H4 strongly aligned
-    Hard block ONLY when D1 is strongly against AND trend is weak on lower TFs.
     """
     df_d1 = df_d1_override if df_d1_override is not None else get_mt5_ohlcv(symbol, "D1", bars=100)
     if df_d1 is None or len(df_d1) < slow + 5:
@@ -149,9 +145,9 @@ def check_daily_trend(symbol: str, action: str, fast: int = 21, slow: int = 55, 
         elif d1_trend == "NEUTRAL":
             log.info("[GOLD] D1: NEUTRAL — BUY allowed, +0 pts")
             return True, d1_trend, 0
-        else:  # DOWN — counter-trend, penalty but not hard block
-            log.info("[GOLD] D1: DOWN — BUY counter-trend, -15 pts penalty")
-            return True, d1_trend, -15
+        else:  # DOWN — counter-trend, hard block
+            log.info("[GOLD] D1: DOWN — BUY counter-trend BLOCKED")
+            return False, d1_trend, 0
 
     else:  # SELL
         if d1_trend == "DOWN":
@@ -160,9 +156,9 @@ def check_daily_trend(symbol: str, action: str, fast: int = 21, slow: int = 55, 
         elif d1_trend == "NEUTRAL":
             log.info("[GOLD] D1: NEUTRAL — SELL allowed, +0 pts")
             return True, d1_trend, 0
-        else:  # UP — counter-trend, penalty
-            log.info("[GOLD] D1: UP — SELL counter-trend, -15 pts penalty")
-            return True, d1_trend, -15
+        else:  # UP — counter-trend, hard block
+            log.info("[GOLD] D1: UP — SELL counter-trend BLOCKED")
+            return False, d1_trend, 0
 
 
 # ── Trend from H1 + H4 ────────────────────────────────────────────────────────
