@@ -17,7 +17,11 @@ def ema(series: pd.Series, period: int) -> pd.Series:
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     # Ensure series is numeric to avoid timedelta issues in diff/clip
-    if pd.api.types.is_datetime64_any_dtype(series) or pd.api.types.is_timedelta64_any_dtype(series):
+    # Using more robust type checking for different pandas versions
+    is_dt = pd.api.types.is_datetime64_any_dtype(series)
+    is_td = pd.api.types.is_timedelta64_dtype(series) if hasattr(pd.api.types, 'is_timedelta64_dtype') else False
+    
+    if is_dt or is_td:
         series = pd.to_numeric(series, errors='coerce')
     
     delta    = series.diff()
